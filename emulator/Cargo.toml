@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 winit = "0.30.12"
 softbuffer = "0.4.6"
+fontdue = "0.9.3"

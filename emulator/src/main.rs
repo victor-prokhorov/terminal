@@ -1,3 +1,7 @@
+use fontdue::{
+    Font,
+    layout::{CoordinateSystem, Layout, TextStyle},
+};
 use softbuffer::{Context, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -6,9 +10,14 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
+const DEJA_VU_SANS_MONO: &[u8] =
+    include_bytes!("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf");
+
 struct App {
     window: Option<Rc<Window>>,
     surface: Option<Surface<Rc<Window>, Rc<Window>>>,
+    font: Font,
+    layout: Layout,
 }
 
 impl ApplicationHandler for App {
@@ -43,6 +52,24 @@ impl ApplicationHandler for App {
                             for pixel in buffer.iter_mut() {
                                 *pixel = 0x00_00_00;
                             }
+                            self.layout.clear();
+                            self.layout
+                                .append(&[&self.font], &TextStyle::new("hello", 20.0, 0));
+                            for glyph in self.layout.glyphs() {
+                                let (metrics, bitmap) =
+                                    self.font.rasterize(glyph.parent, glyph.key.px);
+                                for y in 0..metrics.height {
+                                    for x in 0..metrics.width {
+                                        let px = glyph.x as usize + x;
+                                        let py = glyph.y as usize + y;
+                                        if px < width.get() as usize && py < height.get() as usize {
+                                            let alpha = bitmap[y * metrics.width + x];
+                                            buffer[py * width.get() as usize + px] =
+                                                u32::from(alpha) * 0x01_01_01;
+                                        }
+                                    }
+                                }
+                            }
                             buffer
                                 .present()
                                 .expect("failed to presetn buffer to the window");
@@ -66,9 +93,14 @@ impl ApplicationHandler for App {
 fn main() {
     if let Ok(event_loop) = EventLoop::new() {
         event_loop.set_control_flow(ControlFlow::Wait);
+        let font = Font::from_bytes(DEJA_VU_SANS_MONO, fontdue::FontSettings::default())
+            .expect("failed to load font");
+        let layout = Layout::new(CoordinateSystem::PositiveYDown);
         let mut app = App {
             window: None,
             surface: None,
+            font,
+            layout,
         };
         event_loop
             .run_app(&mut app)
