@@ -2,9 +2,13 @@ use fontdue::{
     Font,
     layout::{CoordinateSystem, Layout, TextStyle},
 };
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use softbuffer::{Context, Surface};
+use std::io::{Read, Write};
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -21,6 +25,8 @@ struct App {
     layout: Layout,
     input: String,
     output: String,
+    pty_writer: Box<dyn Write + Send>,
+    pty_output: Receiver<String>,
 }
 
 impl ApplicationHandler for App {
@@ -51,23 +57,8 @@ impl ApplicationHandler for App {
                         }
                         Key::Named(NamedKey::Enter) => {
                             if !self.input.is_empty() {
-                                use std::process::Command;
-                                let parts: Vec<&str> = self.input.split_whitespace().collect();
-                                if let Some(cmd) = parts.first() {
-                                    let args = &parts[1..];
-                                    match Command::new(cmd).args(args).output() {
-                                        Ok(output) => {
-                                            self.output = format!(
-                                                "{}{}",
-                                                String::from_utf8_lossy(&output.stdout),
-                                                String::from_utf8_lossy(&output.stderr)
-                                            );
-                                        }
-                                        Err(e) => {
-                                            self.output = e.to_string();
-                                        }
-                                    }
-                                }
+                                writeln!(self.pty_writer, "{}", self.input).expect("failed to write");
+                                self.pty_writer.flush().expect("failed to flush");
                                 self.input.clear();
                             }
                         }
@@ -93,10 +84,11 @@ impl ApplicationHandler for App {
                             for pixel in buffer.iter_mut() {
                                 *pixel = 0x00_00_00;
                             }
+                            let clean_output = strip_ansi_codes(&self.output);
                             let display = if self.input.is_empty() {
-                                &self.output
+                                clean_output.as_str()
                             } else {
-                                &self.input
+                                &format!("{}{}", clean_output, self.input)
                             };
                             let font_size = 16.0;
                             let line_height = 20;
@@ -138,28 +130,97 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        while let Ok(output) = self.pty_output.try_recv() {
+            self.output.push_str(&output);
+        }
         if let Some(window) = &self.window {
             window.request_redraw();
         }
     }
 }
 
-fn main() {
-    if let Ok(event_loop) = EventLoop::new() {
-        event_loop.set_control_flow(ControlFlow::Wait);
-        let font = Font::from_bytes(DEJA_VU_SANS_MONO, fontdue::FontSettings::default())
-            .expect("failed to load font");
-        let layout = Layout::new(CoordinateSystem::PositiveYDown);
-        let mut app = App {
-            window: None,
-            surface: None,
-            font,
-            layout,
-            input: String::new(),
-            output: String::new(),
-        };
-        event_loop
-            .run_app(&mut app)
-            .expect("event loop failed to run the app");
+fn main() -> anyhow::Result<()> {
+    let event_loop = EventLoop::new()?;
+    event_loop.set_control_flow(ControlFlow::Wait);
+    let font = Font::from_bytes(DEJA_VU_SANS_MONO, fontdue::FontSettings::default())
+        .expect("failed to load font");
+    let layout = Layout::new(CoordinateSystem::PositiveYDown);
+    let pty_system = native_pty_system();
+    let pair = pty_system.openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+    let cmd = CommandBuilder::new("bash");
+    let mut child = pair.slave.spawn_command(cmd)?;
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader()?;
+    let pty_writer = pair.master.take_writer()?;
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut buffer = [0; 1024];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => {
+                    break;
+                }
+                Ok(bytes_read) => {
+                    let output = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+                    if tx.send(output).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    break;
+                }
+            }
+        }
+        let status = child.wait().expect("failed to wait child");
+        println!("status {status}");
+    });
+    let mut app = App {
+        window: None,
+        surface: None,
+        font,
+        layout,
+        input: String::new(),
+        output: String::new(),
+        pty_writer,
+        pty_output: rx,
+    };
+    event_loop.run_app(&mut app)?;
+    Ok(())
+}
+
+fn strip_ansi_codes(text: &str) -> String {
+    let mut result = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&next_ch) = chars.peek() {
+                    chars.next();
+                    if next_ch.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else if chars.peek() == Some(&']') {
+                chars.next();
+                while let Some(next_ch) = chars.next() {
+                    if next_ch == '\x07' || (next_ch == '\x1b' && chars.peek() == Some(&'\\')) {
+                        if next_ch == '\x1b' {
+                            chars.next();
+                        }
+                        break;
+                    }
+                }
+            }
+        } else {
+            result.push(ch);
+        }
     }
+    result
 }
