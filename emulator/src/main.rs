@@ -8,6 +8,7 @@ use std::rc::Rc;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 const DEJA_VU_SANS_MONO: &[u8] =
@@ -18,6 +19,7 @@ struct App {
     surface: Option<Surface<Rc<Window>, Rc<Window>>>,
     font: Font,
     layout: Layout,
+    input: String,
 }
 
 impl ApplicationHandler for App {
@@ -40,6 +42,25 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state.is_pressed() {
+                    match event.logical_key {
+                        Key::Named(NamedKey::Backspace) => {
+                            self.input.pop();
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            self.input.clear();
+                        }
+                        Key::Named(NamedKey::Space) => {
+                            self.input.push(' ');
+                        }
+                        Key::Character(c) => {
+                            self.input.push_str(c.as_str());
+                        }
+                        _ => {}
+                    }
+                }
+            }
             WindowEvent::RedrawRequested => {
                 if let (Some(window), Some(surface)) = (&self.window, &mut self.surface) {
                     let inner_size = window.inner_size();
@@ -54,7 +75,7 @@ impl ApplicationHandler for App {
                             }
                             self.layout.clear();
                             self.layout
-                                .append(&[&self.font], &TextStyle::new("hello", 20.0, 0));
+                                .append(&[&self.font], &TextStyle::new(&self.input, 20.0, 0));
                             for glyph in self.layout.glyphs() {
                                 let (metrics, bitmap) =
                                     self.font.rasterize(glyph.parent, glyph.key.px);
@@ -101,6 +122,7 @@ fn main() {
             surface: None,
             font,
             layout,
+            input: String::new(),
         };
         event_loop
             .run_app(&mut app)
