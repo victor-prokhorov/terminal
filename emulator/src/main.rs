@@ -20,6 +20,7 @@ struct App {
     font: Font,
     layout: Layout,
     input: String,
+    output: String,
 }
 
 impl ApplicationHandler for App {
@@ -49,7 +50,26 @@ impl ApplicationHandler for App {
                             self.input.pop();
                         }
                         Key::Named(NamedKey::Enter) => {
-                            self.input.clear();
+                            if !self.input.is_empty() {
+                                use std::process::Command;
+                                let parts: Vec<&str> = self.input.split_whitespace().collect();
+                                if let Some(cmd) = parts.first() {
+                                    let args = &parts[1..];
+                                    match Command::new(cmd).args(args).output() {
+                                        Ok(output) => {
+                                            self.output = format!(
+                                                "{}{}",
+                                                String::from_utf8_lossy(&output.stdout),
+                                                String::from_utf8_lossy(&output.stderr)
+                                            );
+                                        }
+                                        Err(e) => {
+                                            self.output = e.to_string();
+                                        }
+                                    }
+                                }
+                                self.input.clear();
+                            }
                         }
                         Key::Named(NamedKey::Space) => {
                             self.input.push(' ');
@@ -73,23 +93,36 @@ impl ApplicationHandler for App {
                             for pixel in buffer.iter_mut() {
                                 *pixel = 0x00_00_00;
                             }
-                            self.layout.clear();
-                            self.layout
-                                .append(&[&self.font], &TextStyle::new(&self.input, 20.0, 0));
-                            for glyph in self.layout.glyphs() {
-                                let (metrics, bitmap) =
-                                    self.font.rasterize(glyph.parent, glyph.key.px);
-                                for y in 0..metrics.height {
-                                    for x in 0..metrics.width {
-                                        let px = glyph.x as usize + x;
-                                        let py = glyph.y as usize + y;
-                                        if px < width.get() as usize && py < height.get() as usize {
-                                            let alpha = bitmap[y * metrics.width + x];
-                                            buffer[py * width.get() as usize + px] =
-                                                u32::from(alpha) * 0x01_01_01;
+                            let display = if self.input.is_empty() {
+                                &self.output
+                            } else {
+                                &self.input
+                            };
+                            let font_size = 16.0;
+                            let line_height = 20;
+                            let xp = 10;
+                            let mut yp = 10;
+                            for line in display.lines() {
+                                self.layout.clear();
+                                self.layout
+                                    .append(&[&self.font], &TextStyle::new(line, font_size, 0));
+                                for glyph in self.layout.glyphs() {
+                                    let (metrics, bitmap) =
+                                        self.font.rasterize(glyph.parent, glyph.key.px);
+                                    for my in 0..metrics.height {
+                                        for mx in 0..metrics.width {
+                                            let x = xp + glyph.x as usize + mx;
+                                            let y = yp + glyph.y as usize + my;
+                                            if x < width.get() as usize && y < height.get() as usize
+                                            {
+                                                let alpha = bitmap[my * metrics.width + mx];
+                                                buffer[y * width.get() as usize + x] =
+                                                    u32::from(alpha) * 0x01_01_01;
+                                            }
                                         }
                                     }
                                 }
+                                yp += line_height;
                             }
                             buffer
                                 .present()
@@ -123,6 +156,7 @@ fn main() {
             font,
             layout,
             input: String::new(),
+            output: String::new(),
         };
         event_loop
             .run_app(&mut app)
