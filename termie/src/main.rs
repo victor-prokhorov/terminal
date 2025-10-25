@@ -1,11 +1,6 @@
 use eframe::egui;
 use nix::pty::ForkptyResult;
-use std::{
-    ffi::{CStr, CString},
-    fs::File,
-    io::Read,
-    os::fd::OwnedFd,
-};
+use std::{env, ffi::CString, fs::File, io::Read, os::fd::OwnedFd};
 
 fn main() {
     let fd = unsafe {
@@ -13,11 +8,14 @@ fn main() {
         match result {
             ForkptyResult::Parent { master, .. } => master,
             ForkptyResult::Child => {
-                let shell = CStr::from_bytes_with_nul(b"bash\0").expect("nul termination missing");
-                assert_eq!(shell, c"bash"); // TODO: use CStr directly
-                nix::unistd::execvp::<CString>(shell, &[])
+                let args = [c"ash"];
+                let args: Vec<CString> = args.into_iter().map(ToOwned::to_owned).collect();
+                env::remove_var("PROMPT_COMMAND");
+                env::remove_var("ENV");
+                env::set_var("PS1", "% ");
+                nix::unistd::execvp::<CString>(c"ash", &args)
                     .expect("failed to replace current process image");
-                return; // TODO: find better way
+                return;
             }
         }
     };
