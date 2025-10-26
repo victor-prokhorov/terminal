@@ -1,3 +1,5 @@
+mod http_client;
+
 use eframe::egui;
 use nix::{
     errno::Errno,
@@ -92,7 +94,12 @@ impl eframe::App for App {
                             let tx = self.tx.clone();
                             self.runtime.spawn(async move {
                                 println!("received: {input}");
-                                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                                match http_client::classify(&input).await {
+                                    Err(e) => eprintln!("failed to classify: {e}"),
+                                    Ok(is_command) => {
+                                        println!("classified as command: {is_command}");
+                                    }
+                                }
                                 tx.send(format!("processed: {}", input.trim()))
                                     .expect("failed to send");
                             });
