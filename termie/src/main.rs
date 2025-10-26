@@ -11,8 +11,10 @@ use std::{
     ffi::CString,
     os::fd::{AsFd, OwnedFd},
 };
+
 enum Message {
-    Classification { input: Vec<u8>, is_command: bool },
+    LocalClassification { input: Vec<u8>, is_command: bool },
+    RemoteResponse(String),
     Error { msg: String },
 }
 
@@ -73,16 +75,37 @@ impl eframe::App for App {
         assert!(self.output.len() < 1_000_000);
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                Message::Classification { input, is_command } => {
+                Message::LocalClassification { input, is_command } => {
                     if is_command {
                         nix::unistd::write(self.fd.as_fd(), &input)
                             .expect("failed to write to file descriptor");
                     } else {
-                        self.output.extend_from_slice(&input);
-                        self.output.extend_from_slice(b"natural language query received");
-                        nix::unistd::write(self.fd.as_fd(), b"\n")
-                            .expect("failed to write to file descriptor");
+                        let input = String::from_utf8_lossy(&input).to_string();
+                        let tx = self.tx.clone();
+                        let ctx = ctx.clone();
+                        self.runtime.spawn(async move {
+                            match http_client::send_to_remote_llm(&input).await {
+                                Ok(response) => {
+                                    tx.send(Message::RemoteResponse(response))
+                                        .expect("failed to send");
+                                }
+                                Err(e) => {
+                                    tx.send(Message::Error {
+                                        msg: format!("LLM request failed: {e}"),
+                                    })
+                                    .expect("failed to send");
+                                }
+                            }
+                            ctx.request_repaint();
+                        });
                     }
+                    ctx.request_repaint();
+                }
+                Message::RemoteResponse(response) => {
+                    self.output.extend_from_slice(response.as_bytes());
+                    self.output.extend_from_slice(b"\n");
+                    nix::unistd::write(self.fd.as_fd(), b"\n")
+                        .expect("failed to write to file descriptor");
                     ctx.request_repaint();
                 }
                 Message::Error { msg } => {
@@ -123,9 +146,9 @@ impl eframe::App for App {
                             let tx = self.tx.clone();
                             let ctx = ctx.clone();
                             self.runtime.spawn(async move {
-                                match http_client::classify(&input).await {
+                                match http_client::locally_classify(&input).await {
                                     Ok(is_command) => {
-                                        tx.send(Message::Classification {
+                                        tx.send(Message::LocalClassification {
                                             input: input.as_bytes().to_vec(),
                                             is_command,
                                         })
