@@ -34,7 +34,8 @@ fn main() {
 
 struct App {
     fd: OwnedFd,
-    buf: Vec<u8>,
+    output: Vec<u8>,
+    input: Vec<u8>,
 }
 
 impl App {
@@ -47,38 +48,49 @@ impl App {
         fcntl(fd.as_fd(), FcntlArg::F_SETFL(flags)).expect("failed to set descriptor status flags");
         App {
             fd,
-            buf: Vec::new(),
+            output: Vec::new(),
+            input: Vec::new(),
         }
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        assert!(self.buf.len() < 1_000_000);
+        assert!(self.output.len() < 1_000_000);
         let mut buf = vec![0; 4096];
         match nix::unistd::read(self.fd.as_fd(), &mut buf) {
             Err(Errno::EAGAIN) => (),
             Err(e) => eprintln!("failed to read: {e}"),
-            Ok(read) => self.buf.extend_from_slice(&buf[0..read]),
+            Ok(read) => self.output.extend_from_slice(&buf[0..read]),
         }
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.input(|input_state| {
                 for event in &input_state.events {
-                    let text = match event {
-                        egui::Event::Text(text) => text,
+                    match event {
+                        egui::Event::Text(text) => {
+                            self.input.extend_from_slice(text.as_bytes());
+                            assert!(self.input.len() < 4096);
+                        }
                         egui::Event::Key {
                             key: egui::Key::Enter,
                             pressed: true,
                             ..
-                        } => "\n",
-                        _ => "",
-                    };
-                    nix::unistd::write(self.fd.as_fd(), text.as_bytes())
-                        .expect("failed to write to file descriptor");
+                        } => {
+                            self.input.push(b'\n');
+                            nix::unistd::write(self.fd.as_fd(), self.input.as_slice())
+                                .expect("failed to write to file descriptor");
+                            self.input.clear();
+                        }
+                        _ => (),
+                    }
                 }
             });
             unsafe {
-                ui.label(std::str::from_utf8_unchecked(&self.buf));
+                ui.label(format!(
+                    "{}{}",
+                    std::str::from_utf8_unchecked(&self.output),
+                    std::str::from_utf8_unchecked(&self.input)
+                ));
             }
         });
     }
