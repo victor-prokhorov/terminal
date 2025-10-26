@@ -5,6 +5,7 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 
 pub async fn classify(input: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    let start = std::time::Instant::now();
     let url: hyper::Uri = "http://localhost:11434/api/generate".parse()?;
     let host = url.host().expect("uri has no host");
     let port = url.port_u16().unwrap_or(11434);
@@ -18,7 +19,8 @@ pub async fn classify(input: &str) -> Result<bool, Box<dyn std::error::Error + S
         }
     });
     let prompt = format!(
-        "Classify input as either 'command' (UNIX shell) or 'natural' (normal natural human language). Respond only with 'command' or 'natural'. Examples:\n\nInput: \"ls -la\"\nOutput: command\n\nInput: \"echo hello\"\nOutput: command\n\nInput: \"Hello, how are you?\"\nOutput: natural\n\nNow classify this input:\nInput: \"{input}\"",
+        "Classify input as either 'command' (UNIX shell) or 'natural' (normal natural human language). Respond only with 'command' or 'natural'. Examples:\n\nInput: \"ls -la\"\nOutput: command\n\nInput: \"echo hello\"\nOutput: command\n\nInput: \"Hello, how are you?\"\nOutput: natural\n\nNow classify this input:\nInput: \"{}\"",
+        input.trim()
     );
     let body = serde_json::json!({
         "model": "qwen2.5:0.5b",
@@ -40,5 +42,6 @@ pub async fn classify(input: &str) -> Result<bool, Box<dyn std::error::Error + S
         .unwrap_or("natural")
         .to_lowercase();
     let is_command = response.contains("command");
+    println!("took {:#?} to classify", start.elapsed());
     Ok(is_command)
 }

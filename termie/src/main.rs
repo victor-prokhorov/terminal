@@ -11,6 +11,10 @@ use std::{
     ffi::CString,
     os::fd::{AsFd, OwnedFd},
 };
+enum Message {
+    Classification { input: Vec<u8>, is_command: bool },
+    Error { msg: String },
+}
 
 fn main() {
     let fd = unsafe {
@@ -39,8 +43,8 @@ struct App {
     output: Vec<u8>,
     input: Vec<u8>,
     runtime: tokio::runtime::Runtime,
-    tx: tokio::sync::mpsc::UnboundedSender<String>,
-    rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    tx: tokio::sync::mpsc::UnboundedSender<Message>,
+    rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
 }
 
 impl App {
@@ -68,13 +72,32 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         assert!(self.output.len() < 1_000_000);
         while let Ok(msg) = self.rx.try_recv() {
-            println!("received from channel: {msg}");
+            match msg {
+                Message::Classification { input, is_command } => {
+                    if is_command {
+                        nix::unistd::write(self.fd.as_fd(), &input)
+                            .expect("failed to write to file descriptor");
+                    } else {
+                        self.output.extend_from_slice(&input);
+                        self.output.extend_from_slice(b"natural language query received");
+                        nix::unistd::write(self.fd.as_fd(), b"\n")
+                            .expect("failed to write to file descriptor");
+                    }
+                    ctx.request_repaint();
+                }
+                Message::Error { msg } => {
+                    eprintln!("error: {msg}");
+                }
+            }
         }
         let mut buf = vec![0; 4096];
         match nix::unistd::read(self.fd.as_fd(), &mut buf) {
             Err(Errno::EAGAIN) => (),
             Err(e) => eprintln!("failed to read: {e}"),
-            Ok(read) => self.output.extend_from_slice(&buf[0..read]),
+            Ok(read) => {
+                self.output.extend_from_slice(&buf[0..read]);
+                ctx.request_repaint();
+            }
         }
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.input(|input_state| {
@@ -90,21 +113,33 @@ impl eframe::App for App {
                             ..
                         } => {
                             self.input.push(b'\n');
+                            if self.input.len() == 1 {
+                                self.input.clear();
+                                nix::unistd::write(self.fd.as_fd(), b"\n")
+                                    .expect("failed to write to file descriptor");
+                                continue;
+                            }
                             let input = String::from_utf8_lossy(&self.input).to_string();
                             let tx = self.tx.clone();
+                            let ctx = ctx.clone();
                             self.runtime.spawn(async move {
-                                println!("received: {input}");
                                 match http_client::classify(&input).await {
-                                    Err(e) => eprintln!("failed to classify: {e}"),
                                     Ok(is_command) => {
-                                        println!("classified as command: {is_command}");
+                                        tx.send(Message::Classification {
+                                            input: input.as_bytes().to_vec(),
+                                            is_command,
+                                        })
+                                        .expect("failed to send");
+                                    }
+                                    Err(e) => {
+                                        tx.send(Message::Error {
+                                            msg: format!("classification failed: {e}"),
+                                        })
+                                        .expect("failed to send");
                                     }
                                 }
-                                tx.send(format!("processed: {}", input.trim()))
-                                    .expect("failed to send");
+                                ctx.request_repaint();
                             });
-                            nix::unistd::write(self.fd.as_fd(), self.input.as_slice())
-                                .expect("failed to write to file descriptor");
                             self.input.clear();
                         }
                         _ => (),
