@@ -37,6 +37,8 @@ struct App {
     output: Vec<u8>,
     input: Vec<u8>,
     runtime: tokio::runtime::Runtime,
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+    rx: tokio::sync::mpsc::UnboundedReceiver<String>,
 }
 
 impl App {
@@ -48,11 +50,14 @@ impl App {
         flags.set(OFlag::O_NONBLOCK, true);
         fcntl(fd.as_fd(), FcntlArg::F_SETFL(flags)).expect("failed to set descriptor status flags");
         let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         App {
             fd,
             output: Vec::new(),
             input: Vec::new(),
             runtime,
+            tx,
+            rx,
         }
     }
 }
@@ -60,6 +65,9 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         assert!(self.output.len() < 1_000_000);
+        while let Ok(msg) = self.rx.try_recv() {
+            println!("received from channel: {msg}");
+        }
         let mut buf = vec![0; 4096];
         match nix::unistd::read(self.fd.as_fd(), &mut buf) {
             Err(Errno::EAGAIN) => (),
@@ -81,10 +89,12 @@ impl eframe::App for App {
                         } => {
                             self.input.push(b'\n');
                             let input = String::from_utf8_lossy(&self.input).to_string();
+                            let tx = self.tx.clone();
                             self.runtime.spawn(async move {
-                                println!("received: {}", input);
+                                println!("received: {input}");
                                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                                println!("processed");
+                                tx.send(format!("processed: {}", input.trim()))
+                                    .expect("failed to send");
                             });
                             nix::unistd::write(self.fd.as_fd(), self.input.as_slice())
                                 .expect("failed to write to file descriptor");
