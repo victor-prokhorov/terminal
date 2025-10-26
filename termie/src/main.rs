@@ -42,8 +42,9 @@ struct App {
 impl App {
     fn new(_cc: &eframe::CreationContext<'_>, fd: OwnedFd) -> Self {
         let flags =
-            fcntl(fd.as_fd(), FcntlArg::F_GETFL).expect("failed to get descriptor satus flags");
-        let mut flags = OFlag::from_bits(flags)
+            fcntl(fd.as_fd(), FcntlArg::F_GETFL).expect("failed to get descriptor status flags");
+        dbg!(flags);
+        let mut flags = OFlag::from_bits(flags & OFlag::O_ACCMODE.bits())
             .expect("failed to create configuration options for opened file");
         flags.set(OFlag::O_NONBLOCK, true);
         fcntl(fd.as_fd(), FcntlArg::F_SETFL(flags)).expect("failed to set descriptor status flags");
@@ -57,7 +58,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let mut buf = vec![0; 4096];
-        match self.fd.read(&mut buf) {
+        match nix::unistd::read(self.fd.as_fd(), &mut buf) {
             Err(e) => eprintln!("failed to read: {e}"),
             Ok(read) => self.buf.extend_from_slice(&buf[0..read]),
         }
