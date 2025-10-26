@@ -1,4 +1,4 @@
-use eframe::egui::{self, Event, Key};
+use eframe::egui;
 use nix::{
     errno::Errno,
     fcntl::{FcntlArg, OFlag, fcntl},
@@ -16,23 +16,20 @@ fn main() {
         match result {
             ForkptyResult::Parent { master, .. } => master,
             ForkptyResult::Child => {
-                let args = [c"ash"];
-                let args: Vec<CString> = args.into_iter().map(ToOwned::to_owned).collect();
-                env::remove_var("PROMPT_COMMAND");
                 env::remove_var("ENV");
                 env::set_var("PS1", "% ");
-                nix::unistd::execvp::<CString>(c"ash", &args)
+                nix::unistd::execvp::<CString>(c"ash", &[c"ash".to_owned()])
                     .expect("failed to replace current process image");
                 return;
             }
         }
     };
-    let native_options = eframe::NativeOptions::default();
-    let _ = eframe::run_native(
+    eframe::run_native(
         "App",
-        native_options,
+        eframe::NativeOptions::default(),
         Box::new(|cc| Ok(Box::new(App::new(cc, fd)))),
-    );
+    )
+    .expect("failed to start the app");
 }
 
 struct App {
@@ -57,6 +54,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        assert!(self.buf.len() < 1_000_000);
         let mut buf = vec![0; 4096];
         match nix::unistd::read(self.fd.as_fd(), &mut buf) {
             Err(Errno::EAGAIN) => (),
@@ -67,15 +65,21 @@ impl eframe::App for App {
             ui.input(|input_state| {
                 for event in &input_state.events {
                     let text = match event {
-                        Event::Text(text) => text,
-                        Event::Key { key: Key::Enter, pressed: true, .. } => "\n",
+                        egui::Event::Text(text) => text,
+                        egui::Event::Key {
+                            key: egui::Key::Enter,
+                            pressed: true,
+                            ..
+                        } => "\n",
                         _ => "",
                     };
                     nix::unistd::write(self.fd.as_fd(), text.as_bytes())
                         .expect("failed to write to file descriptor");
                 }
             });
-            unsafe { ui.label(std::str::from_utf8_unchecked(&self.buf)) }
+            unsafe {
+                ui.label(std::str::from_utf8_unchecked(&self.buf));
+            }
         });
     }
 }
