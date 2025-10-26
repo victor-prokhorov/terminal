@@ -36,6 +36,7 @@ struct App {
     fd: OwnedFd,
     output: Vec<u8>,
     input: Vec<u8>,
+    runtime: tokio::runtime::Runtime,
 }
 
 impl App {
@@ -46,10 +47,12 @@ impl App {
             .expect("failed to create configuration options for opened file");
         flags.set(OFlag::O_NONBLOCK, true);
         fcntl(fd.as_fd(), FcntlArg::F_SETFL(flags)).expect("failed to set descriptor status flags");
+        let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
         App {
             fd,
             output: Vec::new(),
             input: Vec::new(),
+            runtime,
         }
     }
 }
@@ -77,6 +80,12 @@ impl eframe::App for App {
                             ..
                         } => {
                             self.input.push(b'\n');
+                            let input = String::from_utf8_lossy(&self.input).to_string();
+                            self.runtime.spawn(async move {
+                                println!("received: {}", input);
+                                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                                println!("processed");
+                            });
                             nix::unistd::write(self.fd.as_fd(), self.input.as_slice())
                                 .expect("failed to write to file descriptor");
                             self.input.clear();
